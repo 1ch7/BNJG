@@ -150,11 +150,8 @@ Deno.serve(async (req: Request) => {
       }
       const avgWeeklyUse = sortedWeeks.length > 0 ? weeklySum / sortedWeeks.length : 0;
 
-      // current_stock: use DB value if non-zero, else derive from initial_stock − consumed
-      const dbStock = Number(ing.current_stock ?? 0);
-      const currentStock = dbStock > 0
-        ? dbStock
-        : Math.max(Number(ing.initial_stock ?? 0) - (totalConsumedByIngredient.get(ing.id) ?? 0), 0);
+      // current_stock: only use the explicit DB value — set via stock upload or manual edit
+      const currentStock = Number(ing.current_stock ?? 0);
 
       const suggestedOrder = Math.max(avgWeeklyUse - currentStock, 0);
 
