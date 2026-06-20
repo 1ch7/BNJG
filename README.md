@@ -1,5 +1,5 @@
 # BNJG
-A web app that supports a restaurant supply usage to reduce and prevent food waste.
+A web app that supports a restaurant supply usage by reducing and preventing food waste while also increasing sales.
 
 # The Boyzzz
 - Geraldo Rafael Effendie
@@ -12,8 +12,12 @@ A web app that supports a restaurant supply usage to reduce and prevent food was
 - Figma Make
 - Gemini
 - Visual Studio Code
+- Supabase
 
 # Challenge and Approach
-- We had some difficulties in managing time
+We chose track 3 which is a track that is aiming to manage and allocate resources efficiently. It is relevant because the usage of unnecessary resources in Malaysia has been a common problem for a long time. We want to solve it by minimizing and optimizing available resources especially in food and beverages category.
 
 # AI Usage
+- Using Figma Make to help the creation of UI/UX efficiently.
+- Using Claude Code to support backend developers.
+- Using Grox API for our project.
