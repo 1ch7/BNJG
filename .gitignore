@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment variables — NEVER commit these
+.env
+.env.*
+!.env.example
+.envgsk_*
+
+# Editor / OS
+.DS_Store
+*.local
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+
+# Claude Code session data
+.claude/
+
+# Lock files (keep pnpm-lock.yaml, skip npm)
+package-lock.json
