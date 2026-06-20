@@ -2,8 +2,8 @@
 A web app that supports a restaurant supply usage to reduce and prevent food waste.
 
 # The Boyzzz
-- Geraldo Effendie
-- Gregorius Fernando
+- Geraldo Rafael Effendie
+- Gregorius Fernando Notosetiawan
 - Brandon David Darmowinoto
 - Jovan Nathaniel Wijaya
 
