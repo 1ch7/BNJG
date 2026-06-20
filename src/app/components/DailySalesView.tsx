@@ -345,7 +345,6 @@ export function DailySalesView() {
 
       const nameCol     = findCol(/\b(menu\s*item|item\s*name|dish|item|menu)\b/i);
       const qtyCol      = findCol(/\b(qty|quantity|sold|count)\b/i);
-      const dateCol     = findCol(/\bdate\b/i);
       const timeCol     = findCol(/\btime\b/i);
       const weatherCol  = findCol(/\bweather\b/i);
       const custTypeCol = findCol(/\bcustomer[\s_]?type\b/i);
@@ -378,22 +377,13 @@ export function DailySalesView() {
         const rawQty  = parseFloat(String(row[qtyCol] ?? "0").replace(/[^0-9.]/g, ""));
         if (!rawName || isNaN(rawQty) || rawQty <= 0) continue;
 
-        // Date detection — use local toDateStr to avoid UTC timezone shift
-        let saleDate = fallbackDate;
-        if (dateCol && row[dateCol]) {
-          const v = row[dateCol];
-          if (v instanceof Date) {
-            saleDate = toDateStr(v);
-          } else {
-            const str = String(v).trim();
-            if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
-              saleDate = str.slice(0, 10); // ISO string — use directly, no Date() conversion
-            } else {
-              const parsed = new Date(str);
-              if (!isNaN(parsed.getTime())) saleDate = toDateStr(parsed);
-            }
-          }
-        }
+        // The day the manager SELECTED is the source of truth for which day this
+        // upload belongs to. The file's own Date column is ignored for day-assignment
+        // so that Analytics (sales_transactions) always lines up with the Daily Sales
+        // pills (daily_sales) — both keyed to selectedDateStr. This prevents a day
+        // (e.g. Sunday) showing green in Daily Sales but empty in Analytics when the
+        // file's internal dates don't match the selected week.
+        const saleDate = fallbackDate;
 
         const menuId = menuByLower.get(rawName.toLowerCase()) ?? null;
 

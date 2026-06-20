@@ -212,7 +212,7 @@ function computeCharts(txs: Transaction[], fallbackWeeklyRows: { lastWeek: numbe
     { name: "Individual", value: Math.round(indTotal/totalQty*100), color: C.cyan },
     { name: "Family (2–4)", value: Math.round(famTotal/totalQty*100), color: C.green },
     { name: "Group (5+)", value: Math.round(grpTotal/totalQty*100), color: C.yellow },
-  ] : orderTypePie;
+  ] : [];
 
   // Weekly rows table
   const computedRows = weekDays.map(({ long, dateStr, dateLabel }, i) => {
@@ -418,6 +418,14 @@ export function AnalyticsView() {
 
   const noData = !txLoading && transactions.length === 0;
 
+  // Real week range label (Mon–Sun of the active data week), used in the recap header
+  const weekRangeLabel = useMemo(() => {
+    const monday = computed?.monday ?? getMondayOfWeek();
+    const sunday = new Date(monday.getTime() + 6 * 86400000);
+    const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `${fmt(monday)} – ${fmt(sunday)}, ${sunday.getFullYear()}`;
+  }, [computed]);
+
   const activeThisWeek   = computed?.thisWeek    ?? emptyThisWeek;
   const activePeakHours  = computed?.peakHours   ?? emptyPeakHours;
   const activeCustomer   = computed?.customerType ?? emptyCustomer;
@@ -456,6 +464,8 @@ export function AnalyticsView() {
   const [narrativeGenerated, setNarrativeGenerated] = useState(false);
 
   const generateNarrative = async () => {
+    // Only generate when there is real uploaded sales data for the week
+    if (confirmedDays.length === 0) return;
     setNarrativeLoading(true);
     setNarrativeGenerated(false);
     setNarratives({
@@ -773,14 +783,20 @@ Distribute actions across all 4 source categories. Return only the JSON array.`;
           <div className="rounded-2xl p-5" style={{ background: C.card, border: `1px solid ${C.border}` }}>
             <p style={{ color: C.text, fontWeight: 600, fontSize: "0.9rem" }}>Order Type Mix</p>
             <p className="text-xs mb-3" style={{ color: C.muted }}>Weekly avg by party size</p>
-            <div className="flex justify-center">
-              <PieChart width={150} height={150}>
-                <Pie data={activeOrderPie} cx={70} cy={70} innerRadius={40} outerRadius={62} paddingAngle={3} dataKey="value">
-                  {activeOrderPie.map((e, i) => <Cell key={`c-${i}`} fill={e.color} fillOpacity={0.85} />)}
-                </Pie>
-                <Tooltip contentStyle={{ background: "#252D36", border: `1px solid ${C.border}`, borderRadius: "10px", fontSize: "11px" }} />
-              </PieChart>
-            </div>
+            {activeOrderPie.length === 0 ? (
+              <div className="flex items-center justify-center" style={{ height: 150 }}>
+                <p className="text-xs" style={{ color: C.dim }}>No sales data yet</p>
+              </div>
+            ) : (
+              <div className="flex justify-center">
+                <PieChart width={150} height={150}>
+                  <Pie data={activeOrderPie} cx={70} cy={70} innerRadius={40} outerRadius={62} paddingAngle={3} dataKey="value">
+                    {activeOrderPie.map((e, i) => <Cell key={`c-${i}`} fill={e.color} fillOpacity={0.85} />)}
+                  </Pie>
+                  <Tooltip contentStyle={{ background: "#252D36", border: `1px solid ${C.border}`, borderRadius: "10px", fontSize: "11px" }} />
+                </PieChart>
+              </div>
+            )}
             <div className="space-y-2">
               {activeOrderPie.map((d) => (
                 <div key={d.name} className="flex items-center justify-between">
@@ -833,7 +849,12 @@ Distribute actions across all 4 source categories. Return only the JSON array.`;
             <Thermometer className="w-4 h-4" style={{ color: C.yellow }} />
             <p style={{ color: C.text, fontWeight: 600, fontSize: "0.9rem" }}>Temperature vs. Customer Volume</p>
           </div>
-          <p className="text-xs mb-4" style={{ color: C.muted }}>12-day rolling view — warmer weather correlates with higher covers</p>
+          <p className="text-xs mb-4" style={{ color: C.muted }}>Rolling view of uploaded days — warmer weather correlates with higher covers</p>
+          {activeWeather.length === 0 ? (
+            <div className="flex items-center justify-center" style={{ height: 170 }}>
+              <p className="text-xs" style={{ color: C.dim }}>No sales data yet — upload daily sales to populate this chart</p>
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={170}>
             <LineChart data={activeWeather} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
@@ -845,6 +866,7 @@ Distribute actions across all 4 source categories. Return only the JSON array.`;
               <Line yAxisId="r" type="monotone" dataKey="temp" name="Temp (°C)" stroke={C.yellow} strokeWidth={2} strokeDasharray="5 3" dot={{ r: 2, fill: C.yellow }} />
             </LineChart>
           </ResponsiveContainer>
+          )}
         </div>
 
         {/* ─── Week-over-Week Performance ───────────────────────────────── */}
@@ -1063,11 +1085,11 @@ Distribute actions across all 4 source categories. Return only the JSON array.`;
               </div>
               <div>
                 <p style={{ color: C.text, fontWeight: 700, fontSize: "0.95rem" }}>Weekly Business Recap</p>
-                <p className="text-xs" style={{ color: C.muted }}>AI-generated analysis · Week of June 16–22, 2026</p>
+                <p className="text-xs" style={{ color: C.muted }}>AI-generated analysis · Week of {weekRangeLabel}</p>
               </div>
             </div>
             <span className="px-3 py-1 rounded-md text-xs" style={{ background: "rgba(255,255,255,0.05)", color: C.dim, fontWeight: 500 }}>
-              Updated 2h ago
+              {confirmedDays.length}/7 days with data
             </span>
           </div>
 
@@ -1155,8 +1177,8 @@ Distribute actions across all 4 source categories. Return only the JSON array.`;
               <p className="text-xs uppercase tracking-widest" style={{ color: C.dim, fontWeight: 600 }}>AI Analysis</p>
               <button
                 onClick={generateNarrative}
-                disabled={narrativeLoading}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs transition-all hover:opacity-90 disabled:opacity-50"
+                disabled={narrativeLoading || confirmedDays.length === 0}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{ background: "rgba(62,217,196,0.1)", border: `1px solid rgba(62,217,196,0.25)`, color: C.cyan, fontWeight: 600 }}>
                 <Brain className="w-3.5 h-3.5" />
                 {narrativeLoading ? "Generating…" : narrativeGenerated ? "Regenerate" : "Generate AI Recap"}
@@ -1167,8 +1189,17 @@ Distribute actions across all 4 source categories. Return only the JSON array.`;
               <div className="flex items-center justify-center py-8 rounded-xl" style={{ border: `1px dashed rgba(255,255,255,0.1)` }}>
                 <div className="text-center">
                   <Brain className="w-8 h-8 mx-auto mb-2" style={{ color: C.dim }} />
-                  <p className="text-sm" style={{ color: C.dim }}>Click "Generate AI Recap" to get a live analysis</p>
-                  <p className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.15)" }}>Uses your real stock levels and weekly cover data</p>
+                  {confirmedDays.length === 0 ? (
+                    <>
+                      <p className="text-sm" style={{ color: C.dim }}>No sales data yet for this week</p>
+                      <p className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.15)" }}>Upload daily sales reports — the AI recap unlocks once there's real data</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm" style={{ color: C.dim }}>Click "Generate AI Recap" to get a live analysis</p>
+                      <p className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.15)" }}>Based on your {confirmedDays.length} day{confirmedDays.length !== 1 ? "s" : ""} of uploaded sales + current stock levels</p>
+                    </>
+                  )}
                 </div>
               </div>
             )}
