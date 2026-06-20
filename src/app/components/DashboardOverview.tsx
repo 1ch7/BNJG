@@ -30,6 +30,7 @@ function getMondayOfWeek() {
 function addDays(d: Date, n: number) { const r = new Date(d); r.setDate(d.getDate() + n); return r; }
 
 const DOW_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
 const levelColors: Record<string, string> = {
   critical: "#FF6B6B", high: C.yellow, medium: C.cyan,
 };
@@ -72,6 +73,10 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
   const [suggestions, setSuggestions]     = useState<SuggestionRow[]>([]);
   const [txThisWeek, setTxThisWeek]       = useState<TxRow[]>([]);
   const [txLastWeek, setTxLastWeek]       = useState<TxRow[]>([]);
+  const [daysUploaded, setDaysUploaded]   = useState(0);
+  const [hasSalesData, setHasSalesData]   = useState(false);
+  const [showThisWeek, setShowThisWeek]   = useState(true);
+  const [showLastWeek, setShowLastWeek]   = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -94,6 +99,9 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
         { data: suggData },
         { data: txThis },
         { data: txLast },
+        { data: dailyRows },
+        { data: menuRows },
+        { data: priceTx },
       ] = await Promise.all([
         supabase.from("managers").select("restaurant_name").eq("id", uid).single(),
         supabase.from("overstock_alerts").select("id", { count: "exact", head: true })
@@ -122,6 +130,20 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
           .eq("manager_id", uid)
           .gte("sale_date", toDateStr(lastMonday))
           .lte("sale_date", toDateStr(lastSunday)),
+        supabase.from("daily_sales")
+          .select("sale_date, quantity_sold, menu_id")
+          .eq("manager_id", uid)
+          .gte("sale_date", toDateStr(lastMonday))
+          .lte("sale_date", toDateStr(sunday)),
+        supabase.from("menus")
+          .select("id, name, price")
+          .eq("manager_id", uid),
+        // Broad pull of the uploaded sales report — used to derive a real per-menu
+        // selling price (the cookbook upload doesn't store menu prices).
+        supabase.from("sales_transactions")
+          .select("menu_name, quantity, unit_price, total_price")
+          .eq("manager_id", uid)
+          .limit(5000),
       ]);
 
       if (manager?.restaurant_name) setRestaurantName(manager.restaurant_name);
@@ -130,8 +152,58 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
       setItemsTracked(ingCount ?? 0);
       setAllAlerts((alertsFull ?? []) as AlertRow[]);
       setSuggestions((suggData ?? []) as SuggestionRow[]);
-      setTxThisWeek((txThis ?? []) as TxRow[]);
-      setTxLastWeek((txLast ?? []) as TxRow[]);
+      // ── Revenue & covers ─────────────────────────────────────────────────
+      // sales_transactions is the rich source, but it stores each file's OWN dates,
+      // which may fall outside the current calendar week. daily_sales is always keyed
+      // to the uploaded pill date (this week), so we fall back to it × menu price
+      // whenever the week has no transactions — keeping the dashboard in sync with the pills.
+      const mondayStr = toDateStr(monday), sundayStr = toDateStr(sunday);
+      const lastMondayStr = toDateStr(lastMonday), lastSundayStr = toDateStr(lastSunday);
+
+      type DailyRow = { sale_date: string; quantity_sold: number; menu_id: string | null };
+      const allDaily = (dailyRows ?? []) as DailyRow[];
+      const thisWeekDaily = allDaily.filter(r => r.sale_date >= mondayStr && r.sale_date <= sundayStr);
+      const lastWeekDaily = allDaily.filter(r => r.sale_date >= lastMondayStr && r.sale_date <= lastSundayStr);
+
+      // Per-menu unit price derived from the uploaded sales report (averaged).
+      // Falls back to the menu's own price if the report carried no price column.
+      const reportPriceByName = new Map<string, number>();
+      {
+        const acc = new Map<string, { sum: number; n: number }>();
+        for (const t of (priceTx ?? []) as { menu_name: string | null; quantity: number; unit_price: number | null; total_price: number | null }[]) {
+          if (!t.menu_name) continue;
+          const qty = t.quantity || 0;
+          const unit = t.unit_price != null ? Number(t.unit_price)
+            : (t.total_price != null && qty > 0 ? Number(t.total_price) / qty : null);
+          if (unit == null || !isFinite(unit) || unit <= 0) continue;
+          const key = t.menu_name.toLowerCase().trim();
+          const a = acc.get(key) ?? { sum: 0, n: 0 };
+          a.sum += unit; a.n += 1; acc.set(key, a);
+        }
+        for (const [k, a] of acc) reportPriceByName.set(k, a.sum / a.n);
+      }
+
+      const menuList = (menuRows ?? []) as { id: string; name: string; price: number | null }[];
+      const menuPriceById = new Map<string, number>();
+      for (const m of menuList) {
+        const fromReport = reportPriceByName.get(m.name.toLowerCase().trim());
+        menuPriceById.set(m.id, fromReport && fromReport > 0 ? fromReport : (Number(m.price) || 0));
+      }
+
+      const fromDaily = (rows: DailyRow[]): TxRow[] => rows.map(r => ({
+        sale_date: r.sale_date,
+        quantity: r.quantity_sold ?? 0,
+        total_price: r.menu_id ? (menuPriceById.get(r.menu_id) ?? 0) * (r.quantity_sold ?? 0) : 0,
+      }));
+
+      const thisTx = (txThis ?? []) as TxRow[];
+      const lastTx = (txLast ?? []) as TxRow[];
+      setTxThisWeek(thisTx.length > 0 ? thisTx : fromDaily(thisWeekDaily));
+      setTxLastWeek(lastTx.length > 0 ? lastTx : fromDaily(lastWeekDaily));
+      setDaysUploaded(new Set(thisWeekDaily.map(r => r.sale_date)).size);
+      // Real sales exist only if a daily sales report was actually uploaded
+      // (daily_sales / sales_transactions). Stock alerts & suggestions alone don't count.
+      setHasSalesData(allDaily.length > 0 || ((priceTx ?? []) as unknown[]).length > 0);
 
       if (topAlerts) {
         setRecentAlerts((topAlerts as AlertRow[]).map(a => ({
@@ -162,6 +234,12 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
     return bins;
   }, [txThisWeek, txLastWeek]);
 
+  // True when we have any real revenue to plot; otherwise the chart shows sample data.
+  const hasRevenue = useMemo(
+    () => weekRevChart.some(b => b.thisWeek > 0 || b.lastWeek > 0),
+    [weekRevChart]
+  );
+
   const weeklyRevTotal = useMemo(
     () => txThisWeek.reduce((s, t) => s + (t.total_price ?? 0), 0),
     [txThisWeek]
@@ -174,11 +252,6 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
     () => txThisWeek.reduce((s, t) => s + t.quantity, 0),
     [txThisWeek]
   );
-  const daysUploaded = useMemo(
-    () => new Set(txThisWeek.map(t => t.sale_date)).size,
-    [txThisWeek]
-  );
-
   const potentialRecovery = useMemo(
     () => allAlerts.reduce((s, a) => s + (a.potential_recovery ?? 0), 0),
     [allAlerts]
@@ -385,34 +458,60 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
         <div className="grid grid-cols-2 gap-4">
 
           {/* Weekly Revenue Chart */}
-          <div className="rounded-2xl p-5" style={{ background: C.card, border: `1px solid ${C.border}` }}>
+          <div className="rounded-2xl p-5 flex flex-col" style={{ background: C.card, border: `1px solid ${C.border}` }}>
             <div className="flex items-center justify-between mb-4">
               <div>
                 <p style={{ color: C.text, fontWeight: 600, fontSize: "0.9rem" }}>Weekly Revenue (RM)</p>
                 <p className="text-xs" style={{ color: C.muted }}>
-                  {txThisWeek.length > 0 ? "From uploaded sales files · this week vs last" : "Upload sales files to see real revenue"}
+                  {hasRevenue
+                    ? "From uploaded sales files · this week vs last"
+                    : "Upload a daily sales report to see revenue"}
                 </p>
               </div>
-              <div className="flex items-center gap-3 text-xs">
-                <span className="flex items-center gap-1" style={{ color: C.cyan }}>
-                  <span className="w-2 h-2 rounded-full inline-block" style={{ background: C.cyan }} />This week
-                </span>
-                <span className="flex items-center gap-1" style={{ color: C.muted }}>
-                  <span className="w-2 h-2 rounded-full inline-block" style={{ background: "rgba(255,255,255,0.25)" }} />Last week
-                </span>
-              </div>
+              {hasRevenue && (
+                <div className="flex items-center gap-3 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setShowThisWeek((v) => !v)}
+                    className="flex items-center gap-1 transition-opacity"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: C.cyan, opacity: showThisWeek ? 1 : 0.4 }}>
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ background: C.cyan }} />This week
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowLastWeek((v) => !v)}
+                    className="flex items-center gap-1 transition-opacity"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, opacity: showLastWeek ? 1 : 0.4 }}>
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ background: "rgba(255,255,255,0.25)" }} />Last week
+                  </button>
+                </div>
+              )}
             </div>
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={weekRevChart} margin={{ top: 0, right: 0, left: -20, bottom: 0 }} barGap={3}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
-                <XAxis dataKey="day" tick={{ fontSize: 10, fill: C.muted }} tickLine={false} axisLine={false} />
-                <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false}
-                  tickFormatter={(v) => v === 0 ? "0" : `RM ${(v / 1000).toFixed(1)}k`} />
-                <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255,255,255,0.03)" }} />
-                <Bar dataKey="thisWeek" name="This Week" fill={C.cyan} radius={[4, 4, 0, 0]} fillOpacity={0.9} />
-                <Bar dataKey="lastWeek" name="Last Week" fill="rgba(255,255,255,0.15)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {hasRevenue ? (
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart
+                  data={weekRevChart}
+                  margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
+                  barGap={3}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
+                  <XAxis dataKey="day" tick={{ fontSize: 10, fill: C.muted }} tickLine={false} axisLine={false} />
+                  <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false}
+                    tickFormatter={(v) => v === 0 ? "0" : `RM ${(v / 1000).toFixed(1)}k`} />
+                  <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255,255,255,0.03)" }} />
+                  <Bar dataKey="thisWeek" name="This Week" fill={C.cyan} radius={[4, 4, 0, 0]}
+                    fillOpacity={0.9} hide={!showThisWeek} />
+                  <Bar dataKey="lastWeek" name="Last Week" fill="rgba(255,255,255,0.15)" radius={[4, 4, 0, 0]}
+                    hide={!showLastWeek} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex-1 flex items-center justify-center" style={{ minHeight: 180 }}>
+                <p className="text-sm text-center" style={{ color: C.dim }}>
+                  Upload a daily sales report in Daily Sales<br />to see weekly revenue
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Stock Burn Rate */}
@@ -437,7 +536,7 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
               </div>
             </div>
 
-            {burnRateData.length === 0 ? (
+            {!hasSalesData || burnRateData.length === 0 ? (
               <div className="flex-1 flex items-center justify-center">
                 <p className="text-sm text-center" style={{ color: C.dim }}>
                   Upload sales &amp; run AI analysis<br />to see real burn rates
@@ -474,7 +573,7 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
               </div>
             )}
 
-            {burnRateData.length > 0 && (
+            {hasSalesData && burnRateData.length > 0 && (
               <div className="mt-4 pt-3.5 flex items-center justify-between"
                 style={{ borderTop: `1px solid ${C.border}` }}>
                 {[
