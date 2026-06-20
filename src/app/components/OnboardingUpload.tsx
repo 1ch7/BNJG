@@ -187,7 +187,7 @@ export function OnboardingUpload({ onComplete }: OnboardingUploadProps) {
           name: r.ingredient,
           unit: r.unit,
           initial_stock: r.initial_stock ?? 0,
-          current_stock: r.initial_stock ?? 0,
+          current_stock: 0,
           reorder_level: r.reorder_level ?? 0,
         })))
         .select("id, name");

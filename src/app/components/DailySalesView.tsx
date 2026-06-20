@@ -23,11 +23,14 @@ const WEEK_DAYS = [
 
 interface Suggestion {
   ingredient: string;
+  ingredientId: string;
   unit: string;
+  rawUnit: string;
   currentStock: number;
   aiAvgUsage: number;
   aiSuggested: number;
   reason: string;
+  direction: "up" | "down" | "hold" | null;
 }
 
 function getWeekBounds(offset = 0) {
@@ -178,6 +181,101 @@ export function DailySalesView() {
     setSelectedDayIdx(firstOpen >= 0 ? firstOpen : 0);
   };
 
+  // Computes avg weekly use from actual uploaded daily_sales × recipes.
+  // Order qty = max(avgWeekly − currentStock, 0) × 1.15 (15% buffer).
+  // Shows 0 for both columns if no sales have been uploaded yet.
+  const generateAIOrderQtys = async (sug: Suggestion[]) => {
+    if (sug.length === 0) return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const normVal = (val: number, rawUnit: string) =>
+        rawUnit === "g" || rawUnit === "ml" ? val / 1000 : val;
+
+      const toWeekMon = (dateStr: string): string => {
+        const d = new Date(dateStr + "T12:00:00");
+        const dow = d.getDay();
+        const mon = new Date(d);
+        mon.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow));
+        return mon.toISOString().slice(0, 10);
+      };
+
+      // Fetch 4 weeks of uploaded sales + menus + recipes
+      const since = new Date();
+      since.setDate(since.getDate() - 28);
+      const sinceStr = since.toISOString().slice(0, 10);
+
+      const [{ data: sales }, { data: menus }] = await Promise.all([
+        supabase
+          .from("daily_sales")
+          .select("menu_id, quantity_sold, sale_date")
+          .eq("manager_id", session.user.id)
+          .gte("sale_date", sinceStr),
+        supabase
+          .from("menus")
+          .select("id, name")
+          .eq("manager_id", session.user.id),
+      ]);
+
+      // No sales uploaded yet → leave everything at 0
+      if (!sales || sales.length === 0) return;
+
+      const menuIds = (menus ?? []).map((m: { id: string }) => m.id);
+
+      const { data: recipes } = menuIds.length > 0
+        ? await supabase
+            .from("recipes")
+            .select("menu_id, ingredient_id, quantity_used")
+            .in("menu_id", menuIds)
+        : { data: [] as { menu_id: string; ingredient_id: string; quantity_used: number }[] };
+
+      // No recipes → can't map sales to ingredients
+      if (!recipes || recipes.length === 0) return;
+
+      const recipesByMenu = new Map<string, { ingredient_id: string; quantity_used: number }[]>();
+      for (const r of recipes) {
+        if (!recipesByMenu.has(r.menu_id)) recipesByMenu.set(r.menu_id, []);
+        recipesByMenu.get(r.menu_id)!.push(r);
+      }
+
+      // ingredient_id → week_monday → raw total consumed
+      const weekIngMap = new Map<string, Map<string, number>>();
+      for (const sale of sales) {
+        const wk = toWeekMon(sale.sale_date);
+        for (const r of recipesByMenu.get(sale.menu_id) ?? []) {
+          const amt = sale.quantity_sold * r.quantity_used;
+          if (!weekIngMap.has(r.ingredient_id)) weekIngMap.set(r.ingredient_id, new Map());
+          weekIngMap.get(r.ingredient_id)!.set(wk, (weekIngMap.get(r.ingredient_id)!.get(wk) ?? 0) + amt);
+        }
+      }
+
+      // Compute real avg weekly use per ingredient and apply formula for order qty
+      const updatedSug = sug.map(s => {
+        const wkMap = weekIngMap.get(s.ingredientId);
+        if (!wkMap || wkMap.size === 0) return s; // ingredient not sold → leave as 0
+        const vals = Array.from(wkMap.values()).map(v => normVal(v, s.rawUnit));
+        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+        return { ...s, aiAvgUsage: avg };
+      });
+
+      setSuggestions(updatedSug);
+      setAvgUsage(Object.fromEntries(updatedSug.map(s => [s.ingredient, s.aiAvgUsage])));
+
+      // Order qty: max(avgWeekly − currentStock, 0) + 15% buffer
+      setQuantities(() => {
+        const result: Record<string, number> = {};
+        for (const s of updatedSug) {
+          const gap = Math.max(s.aiAvgUsage - s.currentStock, 0);
+          result[s.ingredient] = parseFloat((gap * 1.15).toFixed(2));
+        }
+        return result;
+      });
+    } catch {
+      // silently leave values as 0 on any error
+    }
+  };
+
   const fetchSuggestions = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return;
@@ -195,26 +293,32 @@ export function DailySalesView() {
         unit === "g" ? val / 1000 : unit === "ml" ? val / 1000 : val;
 
       const mapped: Suggestion[] = data.map((row: {
+        ingredient_id: string;
         ingredients: { name: string; unit: string; current_stock: number };
         current_stock: number;
         weekly_use: number;
         suggested_order: number;
         reasoning: string;
+        direction: string;
       }) => {
         const rawUnit = row.ingredients.unit;
         const unit = normalizeUnit(rawUnit);
         return {
           ingredient: row.ingredients.name,
+          ingredientId: row.ingredient_id,
           unit,
-          currentStock: normalizeVal(row.ingredients.current_stock ?? row.current_stock ?? 0, rawUnit),
+          rawUnit,
+          currentStock: normalizeVal(row.ingredients.current_stock ?? 0, rawUnit),
           aiAvgUsage: normalizeVal(row.weekly_use ?? 0, rawUnit),
           aiSuggested: normalizeVal(row.suggested_order ?? 0, rawUnit),
           reason: row.reasoning ?? "",
+          direction: (row.direction as "up" | "down" | "hold") ?? null,
         };
       });
       setSuggestions(mapped);
       setQuantities(Object.fromEntries(mapped.map(s => [s.ingredient, s.aiSuggested])));
       setAvgUsage(Object.fromEntries(mapped.map(s => [s.ingredient, s.aiAvgUsage])));
+      generateAIOrderQtys(mapped);
     }
   };
 
@@ -617,9 +721,9 @@ export function DailySalesView() {
   const exportCSV = () => {
     const header = ["Ingredient", "Unit", "Current Stock", "Avg Weekly Use", "Order Qty", "AI Reasoning"];
     const rows = suggestions.map(row => [
-      row.ingredient, row.unit, row.currentStock,
-      avgUsage[row.ingredient] ?? row.aiAvgUsage,
-      quantities[row.ingredient] ?? row.aiSuggested,
+      row.ingredient, row.unit, Number(row.currentStock).toFixed(2),
+      Number(avgUsage[row.ingredient] ?? row.aiAvgUsage).toFixed(2),
+      Number(quantities[row.ingredient] ?? row.aiSuggested).toFixed(2),
       `"${row.reason}"`,
     ]);
     const csv = [header, ...rows].map(r => r.join(",")).join("\n");
@@ -821,7 +925,7 @@ export function DailySalesView() {
                             <span className="text-sm" style={{ color: C.text, fontWeight: 500 }}>{row.ingredient}</span>
                           </div>
                         </td>
-                        <td className="px-5 py-3.5 text-sm" style={{ color: C.muted }}>{row.currentStock} {row.unit}</td>
+                        <td className="px-5 py-3.5 text-sm" style={{ color: C.muted }}>{Number(row.currentStock).toFixed(2)} {row.unit}</td>
                         <td className="px-5 py-3.5">
                           {editingAvg === row.ingredient ? (
                             <div className="flex items-center gap-1">
@@ -835,7 +939,7 @@ export function DailySalesView() {
                           ) : (
                             <button onClick={() => { setEditingAvg(row.ingredient); setTempVal(String(avg)); }}
                               className="flex items-center gap-1.5 group" style={{ background: "none", border: "none" }}>
-                              <span className="text-sm" style={{ color: C.muted }}>{avg} {row.unit}</span>
+                              <span className="text-sm" style={{ color: C.muted }}>{Number(avg).toFixed(2)} {row.unit}</span>
                               <Edit3 className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: C.cyan }} />
                             </button>
                           )}
@@ -860,7 +964,7 @@ export function DailySalesView() {
                               <button onClick={() => { setEditingQty(row.ingredient); setTempVal(String(qty)); }}
                                 className="min-w-[3.5rem] text-center text-sm group flex items-center gap-1 justify-center"
                                 style={{ background: "none", border: "none", color: qty === 0 ? C.dim : C.green, fontWeight: 700 }}>
-                                {qty} {row.unit}
+                                {Number(qty).toFixed(2)} {row.unit}
                                 <Edit3 className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: C.cyan }} />
                               </button>
                               <button onClick={() => adjustQty(row.ingredient, 1)}

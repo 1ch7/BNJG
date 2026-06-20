@@ -1,5 +1,33 @@
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
+// Non-streaming completion — returns the full response text
+export async function groqComplete(
+  messages: GroqMessage[],
+  options?: { model?: string; max_tokens?: number }
+): Promise<string> {
+  const key = import.meta.env.VITE_GROQ_API_KEY as string;
+  if (!key) throw new Error("VITE_GROQ_API_KEY is not set in .env");
+
+  const res = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: options?.model ?? "llama-3.3-70b-versatile",
+      stream: false,
+      max_tokens: options?.max_tokens ?? 1500,
+      messages,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Groq ${res.status}: ${body}`);
+  }
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
 export interface GroqMessage {
   role: "system" | "user" | "assistant";
   content: string;
